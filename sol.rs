@@ -28,7 +28,7 @@ struct BitmapHeader {
 }
 
 #[repr(C)]
-struct ARGB8 {
+struct BGRA8 {
     b : u8,
     g : u8,
     r : u8,
@@ -43,11 +43,19 @@ fn main()
     let width : i32 = 1280;
     let height : i32 = 720;
 
-    let mut pixels : Vec<ARGB8> = Vec::new();
+    let mut pixels : Vec<BGRA8> = Vec::new();
     pixels.reserve((width * height) as usize);
-    for _i in 0..width*height {
-        let pixel = ARGB8{ r: 255, g: 0, b: 0, a: 255 };
-        pixels.push(pixel);
+    for i in 0..height {
+        for _j in 0..width {
+            let pixel : BGRA8;
+            if i > 200 {
+                pixel = BGRA8{ r: 255, g: 0, b: 0, a: 255 };
+            } else {
+                pixel = BGRA8{ r: 0, g: 255, b: 0, a: 255 };
+            }
+
+            pixels.push(pixel);
+        }
     }
 
     let bmfh = BitmapFileHeader{
@@ -55,7 +63,7 @@ fn main()
         size      :
             (size_of::<BitmapFileHeader>() +
              size_of::<BitmapHeader>() +
-             pixels.len() * size_of::<ARGB8>()) as u32,
+             pixels.len() * size_of::<BGRA8>()) as u32,
         reserved0 : 0,
         reserved1 : 0,
         offset    :
@@ -83,17 +91,13 @@ fn main()
         let dst = &bmfh as *const BitmapFileHeader as *const u8;
         let slice = slice::from_raw_parts(dst, size_of::<BitmapFileHeader>() );
         f.write(slice);
-    }
 
-    unsafe {
         let dst = &bmh as *const BitmapHeader as *const u8;
         let slice = slice::from_raw_parts(dst, size_of::<BitmapHeader>() );
         f.write(slice);
-    }
 
-    unsafe {
         let dst = pixels.as_ptr() as *const u8;
-        let slice = slice::from_raw_parts(dst, size_of::<ARGB8>() * pixels.len() );
+        let slice = slice::from_raw_parts(dst, size_of::<BGRA8>() * pixels.len() );
         f.write(slice);
     }
 }
