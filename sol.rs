@@ -110,7 +110,7 @@ impl Div<f32> for Vector3 {
 
 fn dot(lhs : Vector3, rhs : Vector3) -> f32
 {
-    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * lhs.z;
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
 }
 
 fn cross(lhs : Vector3, rhs : Vector3) -> Vector3
@@ -119,7 +119,7 @@ fn cross(lhs : Vector3, rhs : Vector3) -> Vector3
         x: lhs.y * rhs.z - lhs.z * rhs.y,
         y: lhs.z * rhs.x - lhs.x * rhs.z,
         z: lhs.x * rhs.y - lhs.y * rhs.x,
-    }
+    };
 }
 
 fn sqrt(s : f32) -> f32
@@ -127,14 +127,31 @@ fn sqrt(s : f32) -> f32
     return s.sqrt();
 }
 
+fn length_sq(v : Vector3) -> f32
+{
+    return dot(v, v);
+}
+
 fn length(v : Vector3) -> f32
 {
-    return sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    return sqrt(length_sq(v));
 }
 
 fn normalise(v : Vector3) -> Vector3
 {
     return v / length(v);
+}
+
+fn normalise_zero(v: Vector3) -> Vector3
+{
+    let mut r = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+
+    let len_sq = length_sq(v);
+    if (len_sq > (0.0001 * 0.0001)) {
+        r = v * (1.0 / sqrt(len_sq));
+    }
+
+    return r;
 }
 
 fn main()
@@ -152,13 +169,13 @@ fn main()
         pixels.push(pixel);
     }
 
-    let camera_p = Vector3{ x: 0.0, y: -10.0, z: 1.0 };
-    let camera_z = normalise(camera_p);
-    let camera_x = normalise(cross(Vector3{ x: 0.0, y: 0.0, z: 1.0 }, camera_z));
-    let camera_y = normalise(cross(camera_z, camera_x));
+    let camera_p = Vector3{ x: 0.0, y: 2.0, z: 10.0 };
+    let camera_z = normalise_zero(camera_p);
+    let camera_y = normalise_zero(cross(camera_z, Vector3{ x: 1.0, y: 0.0, z: 0.0 }));
+    let camera_x = normalise_zero(cross(camera_y, camera_z));
 
     let plane = Plane{
-        n: Vector3{ x: 0.0, y: 0.0, z: 1.0 },
+        n: Vector3{ x: 0.0, y: 1.0, z: 0.0 },
         d: 0.0
     };
 
@@ -168,37 +185,49 @@ fn main()
     };
 
     let film_d = 1.0;
-    let film_w = 1.0;
-    let film_h = 1.0;
+    let mut film_w = 1.0;
+    let mut film_h = 1.0;
+
+    if width > height {
+        film_h = film_w * (height as f32 / width as f32);
+    } else if height > width {
+        film_w = film_h * (width as f32 / height as f32);
+    }
+
     let film_half_w = 0.5 * film_w;
     let film_half_h = 0.5 * film_h;
     let film_c = camera_p - film_d*camera_z;
 
+    let half_pixel_w = 0.5 / width as f32;
+    let half_pixel_h = 0.5 / height as f32;
+
     for i in 0..height {
+        let film_y = -1.0 + 2.0 * (i as f32 / height as f32);
+        let offset_y = film_y + half_pixel_h;
+
         for j in 0..width {
-            let film = Vector2{
-                x: -1.0 + 2.0*(j as f32 / width as f32),
-                y: -1.0 + 2.0*(i as f32 / height as f32),
-            };
+            let film_x = -1.0 + 2.0 * (j as f32 / width as f32);
+            let offset_x = film_x + half_pixel_w;
 
             let film_p = film_c +
-                film.x*film_half_w*camera_x +
-                film.y*film_half_h*camera_y;
+                offset_x*film_half_w*camera_x +
+                offset_y*film_half_h*camera_y;
 
             let ray_o = camera_p;
-            let ray_d = normalise(film_p - camera_p);
+            let ray_d = normalise_zero(film_p - camera_p);
 
             let mut mat   = 0;
             let mut hit_d = f32::MAX;
 
-            let tolerance = 0.001;
+            let tolerance = 0.0001;
+            let min_distance = 0.001;
 
             // planes
             {
                 let denom = dot(plane.n, ray_d);
                 if denom > tolerance || denom < -tolerance {
                     let t = (-plane.d - dot(plane.n, ray_o)) / denom;
-                    if t > film_d && t < hit_d {
+                    if t > min_distance && t < hit_d {
                         hit_d = t;
                         mat   = 1;
                     }
@@ -206,26 +235,25 @@ fn main()
             }
 
             // spheres
-            if true {
+            {
                 let l : Vector3 = ray_o - sphere.p;
-                let a : f32 = dot(ray_d, ray_d);
-                let b : f32 = 2.0 * dot(ray_d, l);
-                let c : f32 = dot(l, l) - sphere.r * sphere.r;
+                let a = dot(ray_d, ray_d);
+                let b = 2.0 * dot(ray_d, l);
+                let c = dot(l, l) - sphere.r * sphere.r;
 
-                let root_term = sqrt(b*b - 4.0*a*c);
+                let root_term = b*b - 4.0*a*c;
                 let denom = 2.0 * a;
 
-                if root_term > tolerance || root_term < -tolerance {
-                    let tp = (-b + root_term) / denom;
-                    let tn = (-b - root_term) / denom;
+                if root_term >= 0.0 && (denom > tolerance || denom < -tolerance) {
+                    let tp = (-b + sqrt(root_term)) / denom;
+                    let tn = (-b - sqrt(root_term)) / denom;
 
                     let mut t = tp;
-                    if tn > film_d && tn < tp {
+                    if tn > min_distance && tn < tp {
                         t = tn;
                     }
-                    mat   = 2;
 
-                    if t < hit_d {
+                    if t > min_distance && t < hit_d {
                         hit_d = t;
                         mat   = 2;
                     }
