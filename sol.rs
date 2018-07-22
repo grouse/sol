@@ -50,14 +50,23 @@ struct Vector2 {
     y : f32,
 }
 
+#[derive(Copy, Clone)]
 struct Plane {
     n : Vector3,
     d : f32,
+    material : i32,
 }
 
+#[derive(Copy, Clone)]
 struct Sphere {
     p : Vector3,
     r : f32,
+    material : i32,
+}
+
+#[derive(Copy, Clone)]
+struct Material {
+    color : Vector3,
 }
 
 impl Mul<f32> for Vector3 {
@@ -147,11 +156,17 @@ fn normalise_zero(v: Vector3) -> Vector3
     let mut r = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
 
     let len_sq = length_sq(v);
-    if (len_sq > (0.0001 * 0.0001)) {
+    if len_sq > (0.0001 * 0.0001) {
         r = v * (1.0 / sqrt(len_sq));
     }
 
     return r;
+}
+
+fn BGRA8_pack(v : Vector3) -> u32
+{
+    let c = 255.0 * v;
+    return (c.z as u32) | (c.y as u32) << 8 | (c.x as u32) << 16 | 255 << 24;
 }
 
 fn main()
@@ -162,11 +177,10 @@ fn main()
     let width : i32 = 1920;
     let height : i32 = 1080;
 
-    let mut pixels : Vec<BGRA8> = Vec::new();
+    let mut pixels : Vec<u32> = Vec::new();
     pixels.reserve((width * height) as usize);
     for _i in 0..height*width {
-        let pixel = BGRA8{ r: 50, g: 50, b: 50, a: 255 };
-        pixels.push(pixel);
+        pixels.push(0x000000FF);
     }
 
     let camera_p = Vector3{ x: 0.0, y: 2.0, z: 10.0 };
@@ -174,14 +188,21 @@ fn main()
     let camera_y = normalise_zero(cross(camera_z, Vector3{ x: 1.0, y: 0.0, z: 0.0 }));
     let camera_x = normalise_zero(cross(camera_y, camera_z));
 
+    let mut materials : [Material; 3] = [Material{ color: Vector3{ x: 0.0, y: 0.0, z: 0.0 } } ; 3];
+    materials[0].color = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+    materials[1].color = Vector3{ x: 1.0, y: 0.0, z: 0.0 };
+    materials[2].color = Vector3{ x: 0.0, y: 0.0, z: 1.0 };
+
     let plane = Plane{
         n: Vector3{ x: 0.0, y: 1.0, z: 0.0 },
-        d: 0.0
+        d: 0.0,
+        material: 1,
     };
 
     let sphere = Sphere{
         p: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
-        r: 1.0
+        r: 1.0,
+        material: 2,
     };
 
     let film_d = 1.0;
@@ -216,8 +237,8 @@ fn main()
             let ray_o = camera_p;
             let ray_d = normalise_zero(film_p - camera_p);
 
-            let mut mat   = 0;
-            let mut hit_d = f32::MAX;
+            let mut hit_mat = 0;
+            let mut hit_d   = f32::MAX;
 
             let tolerance = 0.0001;
             let min_distance = 0.001;
@@ -228,8 +249,8 @@ fn main()
                 if denom > tolerance || denom < -tolerance {
                     let t = (-plane.d - dot(plane.n, ray_o)) / denom;
                     if t > min_distance && t < hit_d {
-                        hit_d = t;
-                        mat   = 1;
+                        hit_d   = t;
+                        hit_mat = plane.material;
                     }
                 }
             }
@@ -254,20 +275,14 @@ fn main()
                     }
 
                     if t > min_distance && t < hit_d {
-                        hit_d = t;
-                        mat   = 2;
+                        hit_d   = t;
+                        hit_mat = sphere.material;
                     }
                 }
             }
 
-            // TODO(jesper): move into material array
-            if mat == 2 {
-                pixels[(i*width + j) as usize] = BGRA8{ r: 0, g: 0, b: 255, a: 255 };
-            } else if mat == 1 {
-                pixels[(i*width + j) as usize] = BGRA8{ r: 255, g: 0, b: 0, a: 255 };
-            } else {
-                pixels[(i*width + j) as usize] = BGRA8{ r: 0, g: 0, b: 0, a: 255 };
-            }
+            let mat = materials[hit_mat as usize];
+            pixels[(i*width + j) as usize] = BGRA8_pack(mat.color);
         }
     }
 
