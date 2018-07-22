@@ -2,8 +2,9 @@ use std::mem::size_of;
 use std::fs::File;
 use std::io::Write;
 use std::slice;
-use std::ops::{Sub, Div, Add, Mul};
+use std::ops::{Sub, Div, Add, Mul, AddAssign};
 use std::f32;
+use std::u32;
 
 #[repr(C, packed)]
 struct BitmapFileHeader {
@@ -66,7 +67,13 @@ struct Sphere {
 
 #[derive(Copy, Clone)]
 struct Material {
-    color : Vector3,
+    emit        : Vector3,
+    reflect     : Vector3,
+    specularity : f32,
+}
+
+struct RandomSeries {
+    state : u32
 }
 
 impl Mul<f32> for Vector3 {
@@ -109,6 +116,17 @@ impl Add for Vector3 {
     }
 }
 
+impl AddAssign for Vector3 {
+    fn add_assign(&mut self, rhs: Vector3)
+    {
+        *self = Vector3{
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z
+        };
+    }
+}
+
 impl Div<f32> for Vector3 {
     type Output = Vector3;
     fn div(self, rhs: f32) -> Vector3
@@ -120,6 +138,56 @@ impl Div<f32> for Vector3 {
 fn dot(lhs : Vector3, rhs : Vector3) -> f32
 {
     return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+fn hadamard(lhs : Vector3, rhs : Vector3) -> Vector3
+{
+    return Vector3{
+        x: lhs.x * rhs.x,
+        y: lhs.y * rhs.y,
+        z: lhs.z * rhs.z
+    };
+}
+
+trait Lerp {
+    type Output;
+    fn lerp(self, b: Self, t: f32) -> Self;
+}
+
+impl Lerp for f32 {
+    type Output = f32;
+    fn lerp(self, b: f32, t: f32) -> f32
+    {
+        return (1.0-t) * self + t*b;
+    }
+}
+
+impl Lerp for Vector3 {
+    type Output = Vector3;
+    fn lerp(self, b: Vector3, t: f32) -> Vector3
+    {
+        return Vector3{
+            x: self.x.lerp(b.x, t),
+            y: self.y.lerp(b.y, t),
+            z: self.z.lerp(b.z, t)
+        };
+    }
+}
+
+fn rand_f32_uni(r : &mut RandomSeries) -> f32
+{
+    let mut s = r.state;
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    r.state = s;
+
+    return (s >> 1) as f32 / (u32::MAX >> 1) as f32;
+}
+
+fn rand_f32_bi(r : &mut RandomSeries) -> f32
+{
+    return -1.0 + 2.0 * rand_f32_uni(r);
 }
 
 fn cross(lhs : Vector3, rhs : Vector3) -> Vector3
@@ -188,10 +256,16 @@ fn main()
     let camera_y = normalise_zero(cross(camera_z, Vector3{ x: 1.0, y: 0.0, z: 0.0 }));
     let camera_x = normalise_zero(cross(camera_y, camera_z));
 
-    let mut materials : [Material; 3] = [Material{ color: Vector3{ x: 0.0, y: 0.0, z: 0.0 } } ; 3];
-    materials[0].color = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
-    materials[1].color = Vector3{ x: 1.0, y: 0.0, z: 0.0 };
-    materials[2].color = Vector3{ x: 0.0, y: 0.0, z: 1.0 };
+    let mut materials : [Material; 3] = [
+        Material{
+            emit: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
+            reflect: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
+            specularity: 0.0
+        } ; 3];
+
+    materials[0].emit = Vector3{ x: 0.3, y: 0.4, z: 0.5 };
+    materials[1].reflect = Vector3{ x: 0.5, y: 0.5, z: 0.5 };
+    materials[2].reflect = Vector3{ x: 0.9, y: 0.5, z: 0.3 };
 
     let plane = Plane{
         n: Vector3{ x: 0.0, y: 1.0, z: 0.0 },
@@ -204,6 +278,8 @@ fn main()
         r: 1.0,
         material: 2,
     };
+
+    let max_ray_bounce = 8;
 
     let film_d = 1.0;
     let mut film_w = 1.0;
@@ -222,6 +298,11 @@ fn main()
     let half_pixel_w = 0.5 / width as f32;
     let half_pixel_h = 0.5 / height as f32;
 
+    let tolerance = 0.0001;
+    let min_distance = 0.001;
+
+    let mut random_series = RandomSeries{ state: 23528812 };
+
     for i in 0..height {
         let film_y = -1.0 + 2.0 * (i as f32 / height as f32);
         let offset_y = film_y + half_pixel_h;
@@ -234,55 +315,82 @@ fn main()
                 offset_x*film_half_w*camera_x +
                 offset_y*film_half_h*camera_y;
 
-            let ray_o = camera_p;
-            let ray_d = normalise_zero(film_p - camera_p);
+            let mut ray_o = camera_p;
+            let mut ray_d = normalise_zero(film_p - camera_p);
 
-            let mut hit_mat = 0;
-            let mut hit_d   = f32::MAX;
+            let mut color       = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+            let mut attenuation = Vector3{ x: 1.0, y: 1.0, z: 1.0 };
 
-            let tolerance = 0.0001;
-            let min_distance = 0.001;
+            for k in 0..max_ray_bounce {
+                let mut hit_mat = 0;
+                let mut hit_d   = f32::MAX;
 
-            // planes
-            {
-                let denom = dot(plane.n, ray_d);
-                if denom > tolerance || denom < -tolerance {
-                    let t = (-plane.d - dot(plane.n, ray_o)) / denom;
-                    if t > min_distance && t < hit_d {
-                        hit_d   = t;
-                        hit_mat = plane.material;
+                let mut next_ray_n = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+
+                // planes
+                {
+                    let denom = dot(plane.n, ray_d);
+                    if denom > tolerance || denom < -tolerance {
+                        let t = (-plane.d - dot(plane.n, ray_o)) / denom;
+                        if t > min_distance && t < hit_d {
+                            hit_d   = t;
+                            hit_mat = plane.material;
+
+                            next_ray_n = plane.n;
+                        }
                     }
+                }
+
+                // spheres
+                {
+                    let l : Vector3 = ray_o - sphere.p;
+                    let a = dot(ray_d, ray_d);
+                    let b = 2.0 * dot(ray_d, l);
+                    let c = dot(l, l) - sphere.r * sphere.r;
+
+                    let root_term = b*b - 4.0*a*c;
+                    let denom = 2.0 * a;
+
+                    if root_term >= 0.0 && (denom > tolerance || denom < -tolerance) {
+                        let tp = (-b + sqrt(root_term)) / denom;
+                        let tn = (-b - sqrt(root_term)) / denom;
+
+                        let mut t = tp;
+                        if tn > min_distance && tn < tp {
+                            t = tn;
+                        }
+
+                        if t > min_distance && t < hit_d {
+                            hit_d   = t;
+                            hit_mat = sphere.material;
+
+                            next_ray_n = normalise_zero(t*ray_d + l);
+                        }
+                    }
+                }
+
+                let mat = materials[hit_mat as usize];
+                color += hadamard(attenuation, mat.emit);
+
+                if hit_mat != 0 {
+                    ray_o = ray_o + ray_d * hit_d;
+
+                    let x = rand_f32_bi(&mut random_series);
+                    let y = rand_f32_bi(&mut random_series);
+                    let z = rand_f32_bi(&mut random_series);
+                    let rvec = Vector3{ x, y, z };
+
+                    let pure_bounce = ray_d - 2.0 * dot(ray_d, next_ray_n) * next_ray_n;
+                    let random_bounce = normalise_zero(next_ray_n + rvec);
+                    ray_d = normalise_zero(random_bounce.lerp(pure_bounce, mat.specularity));
+
+                    attenuation = hadamard(attenuation, mat.reflect);
+                } else {
+                    break;
                 }
             }
 
-            // spheres
-            {
-                let l : Vector3 = ray_o - sphere.p;
-                let a = dot(ray_d, ray_d);
-                let b = 2.0 * dot(ray_d, l);
-                let c = dot(l, l) - sphere.r * sphere.r;
-
-                let root_term = b*b - 4.0*a*c;
-                let denom = 2.0 * a;
-
-                if root_term >= 0.0 && (denom > tolerance || denom < -tolerance) {
-                    let tp = (-b + sqrt(root_term)) / denom;
-                    let tn = (-b - sqrt(root_term)) / denom;
-
-                    let mut t = tp;
-                    if tn > min_distance && tn < tp {
-                        t = tn;
-                    }
-
-                    if t > min_distance && t < hit_d {
-                        hit_d   = t;
-                        hit_mat = sphere.material;
-                    }
-                }
-            }
-
-            let mat = materials[hit_mat as usize];
-            pixels[(i*width + j) as usize] = BGRA8_pack(mat.color);
+            pixels[(i*width + j) as usize] = BGRA8_pack(color);
         }
     }
 
