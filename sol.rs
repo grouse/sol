@@ -256,27 +256,56 @@ fn main()
     let camera_y = normalise_zero(cross(camera_z, Vector3{ x: 1.0, y: 0.0, z: 0.0 }));
     let camera_x = normalise_zero(cross(camera_y, camera_z));
 
-    let mut materials : [Material; 3] = [
+    let mut materials : [Material;5] = [
         Material{
             emit: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
             reflect: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
             specularity: 0.0
-        } ; 3];
+        }; 5];
 
     materials[0].emit = Vector3{ x: 0.3, y: 0.4, z: 0.5 };
     materials[1].reflect = Vector3{ x: 0.5, y: 0.5, z: 0.5 };
     materials[2].reflect = Vector3{ x: 0.9, y: 0.5, z: 0.3 };
 
-    let plane = Plane{
+    materials[3].reflect = Vector3{ x: 0.95, y: 0.95, z: 0.95 };
+    materials[3].specularity = 1.0;
+
+    materials[4].emit = Vector3{ x: 2.0, y: 0.8, z: 0.8 };
+
+    let mut planes : [Plane;1] = [
+        Plane{
+            n: Vector3{ x: 0.0, y: 1.0, z: 0.0 },
+            d: 0.0,
+            material: 0,
+        }; 1];
+
+    planes[0] = Plane{
         n: Vector3{ x: 0.0, y: 1.0, z: 0.0 },
         d: 0.0,
         material: 1,
     };
 
-    let sphere = Sphere{
+    let mut spheres : [Sphere;3] = [
+         Sphere{
+            p: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
+            r: 1.0,
+            material: 0
+         }; 3];
+
+    spheres[0] = Sphere{
         p: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
         r: 1.0,
         material: 2,
+    };
+    spheres[1] = Sphere{
+        p: Vector3{ x: 3.0, y: 0.0, z: 2.0 },
+        r: 1.0,
+        material: 3,
+    };
+    spheres[2] = Sphere{
+        p: Vector3{ x: 2.5, y: 2.0, z: -5.0 },
+        r: 1.0,
+        material: 4,
     };
 
     let max_ray_bounce = 8;
@@ -327,8 +356,7 @@ fn main()
 
                 let mut next_ray_n = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
 
-                // planes
-                {
+                for plane in &planes {
                     let denom = dot(plane.n, ray_d);
                     if denom > tolerance || denom < -tolerance {
                         let t = (-plane.d - dot(plane.n, ray_o)) / denom;
@@ -341,8 +369,7 @@ fn main()
                     }
                 }
 
-                // spheres
-                {
+                for sphere in &spheres {
                     let l : Vector3 = ray_o - sphere.p;
                     let a = dot(ray_d, ray_d);
                     let b = 2.0 * dot(ray_d, l);
