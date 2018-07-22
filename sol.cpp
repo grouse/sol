@@ -11,28 +11,32 @@ using f32 = float;
 
 #define F32_MAX 3.402823466e+38F
 
+#ifdef _WIN32
+#define PACKED(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))
+#else
 #define PACKED(decl) decl __attribute__((__packed__))
+#endif
 
 PACKED(struct BitmapFileHeader {
-    u16 bmp_type  ;
-    u32 size      ;
-    u16 reserved0 ;
-    u16 reserved1 ;
-    u32 offset    ;
+    u16 bmp_type;
+    u32 size;
+    u16 reserved0;
+    u16 reserved1;
+    u32 offset;
 });
 
 PACKED(struct BitmapHeader {
-    u32 header_size      ;
-    i32 width            ;
-    i32 height           ;
-    u16 planes           ;
-    u16 bpp              ;
-    u32 compression      ;
-    u32 bmp_size         ;
-    i32 res_horiz        ;
-    i32 res_vert         ;
-    u32 colors_used      ;
-    u32 colors_important ;
+    u32 header_size;
+    i32 width;
+    i32 height;
+    u16 planes;
+    u16 bpp;
+    u32 compression;
+    u32 bmp_size;
+    i32 res_horiz;
+    i32 res_vert;
+    u32 colors_used;
+    u32 colors_important;
 });
 
 struct BGRA8 {
@@ -54,13 +58,13 @@ struct Vector2 {
 };
 
 struct Plane {
-    Vector3 n ;
-    f32 d ;
+    Vector3 n;
+    f32 d;
 };
 
 struct Sphere {
-    Vector3 p ;
-    f32 r ;
+    Vector3 p;
+    f32 r;
 };
 
 Vector3 operator*(Vector3 self, f32 rhs)
@@ -95,7 +99,7 @@ Vector3 operator/(Vector3 self, f32 rhs)
 
 f32 dot(Vector3 lhs, Vector3 rhs)
 {
-    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * lhs.z;
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
 }
 
 Vector3 cross(Vector3 lhs, Vector3 rhs)
@@ -109,7 +113,7 @@ Vector3 cross(Vector3 lhs, Vector3 rhs)
 
 f32 length(Vector3 v)
 {
-    return sqrt(dot(v, v));
+    return (f32)sqrt(dot(v, v));
 }
 
 f32 length_sq(Vector3 v)
@@ -128,7 +132,7 @@ Vector3 normalise_zero(Vector3 v)
 
     f32 len_sq = length_sq(v);
     if (len_sq > (0.0001f * 0.0001f)) {
-        r = v * (1.0f / sqrt(len_sq));
+        r = v * (1.0f / (f32)sqrt(len_sq));
     }
 
     return r;
@@ -139,8 +143,8 @@ int main(int argc, char** argv)
     (void)argc;
     (void)argv;
 
-    i32 width = 1920;
-    i32 height = 1080;
+    i32 width = 1280;
+    i32 height = 720;
 
     i32 pixels_size = width*height*sizeof(BGRA8);
     BGRA8 *pixels = (BGRA8*)malloc(pixels_size);
@@ -151,26 +155,36 @@ int main(int argc, char** argv)
     }
 
     Plane plane = Plane{
-        Vector3{ 0.0, 0.0, 1.0 },
+        Vector3{ 0.0, 1.0, 0.0 },
         0.0
     };
 
     Sphere sphere = Sphere{
-        Vector3{ 0.0, 0.0f, -1.0f },
+        Vector3{ 0.0, 0.0f, 0.0f },
         1.0f
     };
 
-    Vector3 camera_p = Vector3{ 0.0f, -10.0f, 1.0f };
+    Vector3 camera_p = Vector3{ 0.0f, 2.0f, 10.0f };
     Vector3 camera_z = normalise_zero(camera_p);
-    Vector3 camera_x = normalise_zero(cross(Vector3{ 0.0f, 0.0f, 1.0f}, camera_z));
-    Vector3 camera_y = normalise_zero(cross(camera_z, camera_x));
+    Vector3 camera_y = normalise_zero(cross(camera_z, Vector3{ 1.0f, 0.0f, 0.0f }));
+    Vector3 camera_x = normalise_zero(cross(camera_y, camera_z));
 
     f32 film_d = 1.0f;
     f32 film_w = 1.0f;
     f32 film_h = 1.0f;
+
+    if (width > height) {
+        film_h = film_w * (f32)height / (f32)width;
+    } else if (height > width) {
+        film_w = film_h * (f32)width / (f32)height;
+    }
+
     f32 film_half_w = 0.5f * film_w;
     f32 film_half_h = 0.5f * film_h;
     Vector3 film_c = camera_p - film_d*camera_z;
+
+    f32 half_pixel_w = 0.5f / width;
+    f32 half_pixel_h = 0.5f / height;
 
     for (i32 i = 0; i < height; i++) {
         f32 film_y = -1.0f + 2.0f*((f32)i / (f32)height);
@@ -178,9 +192,12 @@ int main(int argc, char** argv)
         for (i32 j = 0; j < width; j++) {
             f32 film_x = -1.0f + 2.0f*((f32)j / (f32)width);
 
+            f32 off_x = film_x + half_pixel_w;
+            f32 off_y = film_y + half_pixel_h;
+
             Vector3 film_p = film_c +
-                film_x*film_half_w*camera_x +
-                film_y*film_half_h*camera_y;
+                off_x*film_half_w*camera_x +
+                off_y*film_half_h*camera_y;
 
             Vector3 ray_o = camera_p;
             Vector3 ray_d = normalise_zero(film_p - camera_p);
@@ -199,20 +216,18 @@ int main(int argc, char** argv)
                     if (t > min_hit_distance && t < hit_d) {
                         hit_d = t;
                         mat   = 1;
-                        pixels[(i*width + j)] = BGRA8{ 0, 0, 255, 255 };
                     }
                 }
             }
 
             // spheres
-            if (false) {
-                //Vector3 l = sphere.p - ray_o;
+            {
                 Vector3 l = ray_o - sphere.p;
                 f32 a = dot(ray_d, ray_d);
                 f32 b = 2.0f * dot(ray_d, l);
                 f32 c = dot(l, l) - sphere.r * sphere.r;
 
-                f32 root_term = sqrt(b*b - 4.0f*a*c);
+                f32 root_term = (f32)sqrt(b*b - 4.0f*a*c);
                 f32 denom = 2.0f * a;
 
                 if (root_term > 0.0) {
