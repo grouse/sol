@@ -44,9 +44,20 @@ struct Vector3 {
     z : f32,
 }
 
+#[derive(Copy, Clone)]
+struct Vector2 {
+    x : f32,
+    y : f32,
+}
+
 struct Plane {
     n : Vector3,
     d : f32,
+}
+
+struct Sphere {
+    p : Vector3,
+    r : f32,
 }
 
 impl Mul<f32> for Vector3 {
@@ -61,15 +72,23 @@ impl Mul<Vector3> for f32 {
     type Output = Vector3;
     fn mul(self, rhs: Vector3) -> Vector3
     {
-        Vector3{ x: rhs.x * self, y: rhs.y * self, z: rhs.z * self }
+        Vector3{ x: self * rhs.x, y: self * rhs.y, z: self * rhs.z }
     }
 }
 
-impl Sub for Vector3 {
+impl Sub<Vector3> for Vector3 {
     type Output = Vector3;
     fn sub(self, rhs: Vector3) -> Vector3
     {
         Vector3{ x: self.x - rhs.x, y: self.y - rhs.y, z: self.z - rhs.z }
+    }
+}
+
+impl Sub<f32> for Vector3 {
+    type Output = Vector3;
+    fn sub(self, rhs: f32) -> Vector3
+    {
+        Vector3{ x: self.x - rhs, y: self.y - rhs, z: self.z - rhs }
     }
 }
 
@@ -123,25 +142,29 @@ fn main()
     assert_eq!(40, size_of::<BitmapHeader>());
     println!("hello world!");
 
-    let width : i32 = 1280;
-    let height : i32 = 720;
+    let width : i32 = 1920;
+    let height : i32 = 1080;
 
     let mut pixels : Vec<BGRA8> = Vec::new();
     pixels.reserve((width * height) as usize);
     for _i in 0..height*width {
-        let pixel = BGRA8{ r: 0, g: 0, b: 0, a: 255 };
+        let pixel = BGRA8{ r: 50, g: 50, b: 50, a: 255 };
         pixels.push(pixel);
     }
 
-    let camera_p = Vector3{ x: 0.0, y: 2.0, z: 5.0 };
-    let look_at  = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
-    let camera_z = normalise(camera_p - look_at);
-    let camera_x = normalise(cross(camera_z, Vector3{ x: 0.0, y: 0.0, z: 1.0 }));
+    let camera_p = Vector3{ x: 0.0, y: -10.0, z: 1.0 };
+    let camera_z = normalise(camera_p);
+    let camera_x = normalise(cross(Vector3{ x: 0.0, y: 0.0, z: 1.0 }, camera_z));
     let camera_y = normalise(cross(camera_z, camera_x));
 
     let plane = Plane{
-        n: Vector3{ x: 0.0, y: 1.0, z: 0.0 },
-        d: 2.0
+        n: Vector3{ x: 0.0, y: 0.0, z: 1.0 },
+        d: 0.0
+    };
+
+    let sphere = Sphere{
+        p: Vector3{ x: 0.0, y: 0.0, z: 0.0 },
+        r: 1.0
     };
 
     let film_d = 1.0;
@@ -153,10 +176,9 @@ fn main()
 
     for i in 0..height {
         for j in 0..width {
-            let film = Vector3{
-                x: j as f32 / width as f32 * 2.0 - 1.0,
-                y: i as f32 / height as f32 * 2.0 - 1.0,
-                z: camera_p.z
+            let film = Vector2{
+                x: -1.0 + 2.0*(j as f32 / width as f32),
+                y: -1.0 + 2.0*(i as f32 / height as f32),
             };
 
             let film_p = film_c +
@@ -166,14 +188,57 @@ fn main()
             let ray_o = camera_p;
             let ray_d = normalise(film_p - camera_p);
 
-            let tolerance = 0.01;
-            let denom = dot(plane.n, ray_d);
+            let mut mat   = 0;
+            let mut hit_d = f32::MAX;
 
-            if denom > tolerance || denom < -tolerance {
-                let t = (-plane.d - dot(plane.n, ray_o)) / dot(plane.n, ray_d);
-                if t > 0.0 {
-                    pixels[(i*width + j) as usize] = BGRA8{ r: 255, g: 0, b: 0, a: 255 };
+            let tolerance = 0.001;
+
+            // planes
+            {
+                let denom = dot(plane.n, ray_d);
+                if denom > tolerance || denom < -tolerance {
+                    let t = (-plane.d - dot(plane.n, ray_o)) / denom;
+                    if t > film_d && t < hit_d {
+                        hit_d = t;
+                        mat   = 1;
+                    }
                 }
+            }
+
+            // spheres
+            if true {
+                let l : Vector3 = ray_o - sphere.p;
+                let a : f32 = dot(ray_d, ray_d);
+                let b : f32 = 2.0 * dot(ray_d, l);
+                let c : f32 = dot(l, l) - sphere.r * sphere.r;
+
+                let root_term = sqrt(b*b - 4.0*a*c);
+                let denom = 2.0 * a;
+
+                if root_term > tolerance || root_term < -tolerance {
+                    let tp = (-b + root_term) / denom;
+                    let tn = (-b - root_term) / denom;
+
+                    let mut t = tp;
+                    if tn > film_d && tn < tp {
+                        t = tn;
+                    }
+                    mat   = 2;
+
+                    if t < hit_d {
+                        hit_d = t;
+                        mat   = 2;
+                    }
+                }
+            }
+
+            // TODO(jesper): move into material array
+            if mat == 2 {
+                pixels[(i*width + j) as usize] = BGRA8{ r: 0, g: 0, b: 255, a: 255 };
+            } else if mat == 1 {
+                pixels[(i*width + j) as usize] = BGRA8{ r: 255, g: 0, b: 0, a: 255 };
+            } else {
+                pixels[(i*width + j) as usize] = BGRA8{ r: 0, g: 0, b: 0, a: 255 };
             }
         }
     }
