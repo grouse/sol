@@ -232,17 +232,178 @@ struct Tile {
     i32 start_y, end_y;
 };
 
+struct World {
+    Plane *planes;
+    i32 planes_count;
+
+    Sphere *spheres;
+    i32 spheres_count;
+
+    Material *materials;
+    i32 materials_count;
+};
+
+struct Settings {
+    f32 tolerance;
+    f32 min_hit_distance;
+    i32 max_ray_bounce;
+    i32 rays_per_pixel;
+    f32 inv_rays_per_pixel;
+};
+
+struct Camera {
+    f32 half_pixel_w;
+    f32 half_pixel_h;
+    f32 film_half_w;
+    f32 film_half_h;
+
+    Vector3 film_c;
+
+    Vector3 p;
+    Vector3 x_axis;
+    Vector3 y_axis;
+    Vector3 z_axis;
+};
+
+struct Image {
+    i32 width;
+    i32 height;
+    u32 *pixels;
+};
+
+void ray_cast(
+    Tile tile,
+    Image image,
+    Camera camera,
+    World world,
+    Settings settings,
+    RandomSeries random_series)
+
+{
+    for (i32 i = tile.start_y; i < tile.end_y; i++) {
+        f32 film_y = -1.0f + 2.0f*((f32)i / (f32)image.height);
+
+        for (i32 j = tile.start_x; j < tile.end_x; j++) {
+            f32 film_x = -1.0f + 2.0f*((f32)j / (f32)image.width);
+
+            f32 off_x = film_x + camera.half_pixel_w;
+            f32 off_y = film_y + camera.half_pixel_h;
+
+            Vector3 film_p = camera.film_c +
+                off_x*camera.film_half_w*camera.x_axis +
+                off_y*camera.film_half_h*camera.y_axis;
+
+            Vector3 final_color = {};
+
+            for (i32 k = 0; k < settings.rays_per_pixel; k++) {
+                Vector3 ray_o = camera.p;
+                Vector3 ray_d = normalise_zero(film_p - camera.p);
+
+                Vector3 color = {};
+                Vector3 attenuation = { 1.0f, 1.0f, 1.0f };
+
+                Vector3 next_ray_n;
+                for (i32 l = 0; l < settings.max_ray_bounce; l++) {
+                    i32 hit_mat = 0;
+                    f32 hit_d   = F32_MAX;
+
+                    for (i32 p = 0; p < world.planes_count; p++) {
+                        Plane plane = world.planes[p];
+
+                        f32 denom = dot(plane.n, ray_d);
+                        if (denom > settings.tolerance ||
+                            denom < -settings.tolerance)
+                        {
+                            f32 t = (-plane.d - dot(plane.n, ray_o)) / denom;
+                            if (t > settings.min_hit_distance && t < hit_d) {
+                                hit_d   = t;
+                                hit_mat = plane.material;
+                                next_ray_n = plane.n;
+                            }
+                        }
+                    }
+
+                    for (i32 s = 0; s < world.spheres_count; s++) {
+                        Sphere sphere = world.spheres[s];
+
+                        Vector3 l = ray_o - sphere.p;
+                        f32 a = dot(ray_d, ray_d);
+                        f32 b = 2.0f * dot(ray_d, l);
+                        f32 c = dot(l, l) - sphere.r * sphere.r;
+
+                        f32 root_term = b*b - 4.0f*a*c;
+                        f32 denom = 2.0f * a;
+
+                        if (root_term >= 0.0f &&
+                            (denom > settings.tolerance ||
+                             denom < -settings.tolerance))
+                        {
+                            f32 root = sqrtf(root_term);
+                            f32 tp = (-b + root) / denom;
+                            f32 tn = (-b - root) / denom;
+
+                            f32 t = tp;
+                            if (tn > settings.min_hit_distance && tn < tp) {
+                                t = tn;
+                            }
+
+                            if (t > settings.min_hit_distance && t < hit_d) {
+                                hit_d   = t;
+                                hit_mat = sphere.material;
+                                next_ray_n = normalise_zero(t*ray_d + l);
+                            }
+                        }
+                    }
+
+                    Material mat = world.materials[hit_mat];
+                    color += hadamard(attenuation, mat.emit);
+
+                    if (hit_mat != 0) {
+                        f32 cos_attenuation = dot(-ray_d, next_ray_n);
+                        cos_attenuation = MAX(cos_attenuation, 0.0f);
+
+                        attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
+
+                        ray_o = ray_o + ray_d * hit_d;
+
+                        f32 x = rand_f32_bi(&random_series);
+                        f32 y = rand_f32_bi(&random_series);
+                        f32 z = rand_f32_bi(&random_series);
+                        Vector3 rvec = Vector3{ x, y, z };
+
+                        Vector3 pure_bounce = ray_d - 2.0f * dot(ray_d, next_ray_n) * next_ray_n;
+                        Vector3 random_bounce = normalise_zero(next_ray_n + rvec);
+
+                        ray_d = normalise_zero(lerp(random_bounce, pure_bounce, mat.specularity));
+                    } else {
+                        break;
+                    }
+                }
+
+                final_color += color * settings.inv_rays_per_pixel;
+            }
+
+            Vector3 srgb = Vector3{
+                sRGB_from_linear(final_color.x),
+                    sRGB_from_linear(final_color.y),
+                    sRGB_from_linear(final_color.z)
+            };
+
+            image.pixels[(i*image.width+ j)] = BGRA8_pack(srgb);
+        }
+    }
+}
 int main(int argc, char** argv)
 {
     (void)argc;
     (void)argv;
 
-    i32 width = 1280;
-    i32 height = 720;
+    Image image = {};
+    image.width = 1280;
+    image.height = 720;
 
-    i32 pixels_size = width*height*sizeof(u32);
-    u32 *pixels = (u32*)malloc(pixels_size);
-    memset(pixels, 0x000000FF, pixels_size);
+    i32 pixels_size = image.width*image.height*sizeof(u32);
+    image.pixels = (u32*)malloc(pixels_size);
 
     Material materials[] = {
         //        emit                         reflect                      specularity
@@ -265,39 +426,47 @@ int main(int argc, char** argv)
         Sphere{ Vector3{ 2.5f, 2.0f, -5.0f }, 1.0f,   4 },
     };
 
-    i32 planes_count  = sizeof planes / sizeof planes[0];
-    i32 spheres_count = sizeof spheres / sizeof spheres[0];
+    World world = {};
+    world.spheres = spheres;
+    world.spheres_count = sizeof spheres / sizeof spheres[0];
 
-    Vector3 camera_p = Vector3{ 0.0f, 2.0f, 10.0f };
-    Vector3 camera_z = normalise_zero(camera_p);
-    Vector3 camera_y = normalise_zero(cross(camera_z, Vector3{ 1.0f, 0.0f, 0.0f }));
-    Vector3 camera_x = normalise_zero(cross(camera_y, camera_z));
+    world.planes = planes;
+    world.planes_count = sizeof planes / sizeof planes[0];
+
+    world.materials = materials;
+    world.materials_count = sizeof materials / sizeof materials[0];
+
+    Camera camera = {};
+    camera.p = Vector3{ 0.0f, 2.0f, 10.0f };
+    camera.z_axis = normalise_zero(camera.p);
+    camera.y_axis = normalise_zero(cross(camera.z_axis, Vector3{ 1.0f, 0.0f, 0.0f }));
+    camera.x_axis = normalise_zero(cross(camera.y_axis, camera.z_axis));
+
 
     f32 film_d = 1.0f;
     f32 film_w = 1.0f;
     f32 film_h = 1.0f;
 
-    if (width > height) {
-        film_h = film_w * (f32)height / (f32)width;
-    } else if (height > width) {
-        film_w = film_h * (f32)width / (f32)height;
+    if (image.width > image.height) {
+        film_h = film_w * (f32)image.height / (f32)image.width;
+    } else if (image.height > image.width) {
+        film_w = film_h * (f32)image.width / (f32)image.height;
     }
 
-    f32 film_half_w = 0.5f * film_w;
-    f32 film_half_h = 0.5f * film_h;
-    Vector3 film_c = camera_p - film_d*camera_z;
+    camera.film_half_w = 0.5f * film_w;
+    camera.film_half_h = 0.5f * film_h;
+    camera.film_c = camera.p - film_d*camera.z_axis;
+    camera.half_pixel_w = 0.5f / image.width;
+    camera.half_pixel_h = 0.5f / image.height;
 
-    f32 half_pixel_w = 0.5f / width;
-    f32 half_pixel_h = 0.5f / height;
+    Settings settings = {};
+    settings.tolerance = 0.0001f;
+    settings.min_hit_distance = 0.001f;
+    settings.max_ray_bounce = 4;
+    settings.rays_per_pixel = 16;
+    settings.inv_rays_per_pixel = 1.0f / settings.rays_per_pixel;
 
-    f32 tolerance = 0.0001f;
-    f32 min_hit_distance = 0.001f;
-
-    i32 max_ray_bounce = 4;
-    i32 rays_per_pixel = 16;
-    f32 inv_rays_per_pixel = 1.0f / rays_per_pixel;
     RandomSeries random_series = { 23528812 };
-
 
     constexpr i32 tiles_count_x = 3;
     constexpr i32 tiles_count_y = 3;
@@ -308,126 +477,20 @@ int main(int argc, char** argv)
         for (i32 j = 0; j < tiles_count_x; j++) {
             i32 index = i*tiles_count_x + j;
 
-            tiles[index].start_x = j * (width / tiles_count_x);
-            tiles[index].start_y = i * (height / tiles_count_y);
+            tiles[index].start_x = j * (image.width / tiles_count_x);
+            tiles[index].start_y = i * (image.height / tiles_count_y);
 
-            tiles[index].end_x = j < tiles_count_x-1 ? tiles[index].start_x + width / tiles_count_x : width;
-            tiles[index].end_y = i < tiles_count_y-1 ? tiles[index].start_y + height / tiles_count_y : height;
+            tiles[index].end_x = j < tiles_count_x-1 ?
+                tiles[index].start_x + image.width / tiles_count_x :
+                image.width;
+            tiles[index].end_y = i < tiles_count_y-1 ?
+                tiles[index].start_y + image.height / tiles_count_y :
+                image.height;
         }
     }
 
-    for (i32 t = 0; t < tiles_count; t++) {
-        Tile tile = tiles[t];
-
-        for (i32 i = tile.start_y; i < tile.end_y; i++) {
-            f32 film_y = -1.0f + 2.0f*((f32)i / (f32)height);
-
-            for (i32 j = tile.start_x; j < tile.end_x; j++) {
-                f32 film_x = -1.0f + 2.0f*((f32)j / (f32)width);
-
-                f32 off_x = film_x + half_pixel_w;
-                f32 off_y = film_y + half_pixel_h;
-
-                Vector3 film_p = film_c +
-                    off_x*film_half_w*camera_x +
-                    off_y*film_half_h*camera_y;
-
-                Vector3 final_color = {};
-
-                for (i32 k = 0; k < rays_per_pixel; k++) {
-                    Vector3 ray_o = camera_p;
-                    Vector3 ray_d = normalise_zero(film_p - camera_p);
-
-                    Vector3 color = {};
-                    Vector3 attenuation = { 1.0f, 1.0f, 1.0f };
-
-                    Vector3 next_ray_n;
-                    for (i32 l = 0; l < max_ray_bounce; l++) {
-                        i32 hit_mat = 0;
-                        f32 hit_d   = F32_MAX;
-
-                        for (i32 p = 0; p < planes_count; p++) {
-                            Plane plane = planes[p];
-
-                            f32 denom = dot(plane.n, ray_d);
-                            if (denom > tolerance || denom < -tolerance) {
-                                f32 t = (-plane.d - dot(plane.n, ray_o)) / denom;
-                                if (t > min_hit_distance && t < hit_d) {
-                                    hit_d   = t;
-                                    hit_mat = plane.material;
-                                    next_ray_n = plane.n;
-                                }
-                            }
-                        }
-
-                        for (i32 s = 0; s < spheres_count; s++) {
-                            Sphere sphere = spheres[s];
-
-                            Vector3 l = ray_o - sphere.p;
-                            f32 a = dot(ray_d, ray_d);
-                            f32 b = 2.0f * dot(ray_d, l);
-                            f32 c = dot(l, l) - sphere.r * sphere.r;
-
-                            f32 root_term = b*b - 4.0f*a*c;
-                            f32 denom = 2.0f * a;
-
-                            if (root_term >= 0.0f &&
-                                (denom > tolerance || denom < -tolerance))
-                            {
-                                f32 root = sqrtf(root_term);
-                                f32 tp = (-b + root) / denom;
-                                f32 tn = (-b - root) / denom;
-
-                                f32 t = tp;
-                                if (tn > min_hit_distance && tn < tp) {
-                                    t = tn;
-                                }
-
-                                if (t > min_hit_distance && t < hit_d) {
-                                    hit_d   = t;
-                                    hit_mat = sphere.material;
-                                    next_ray_n = normalise_zero(t*ray_d + l);
-                                }
-                            }
-                        }
-
-                        Material mat = materials[hit_mat];
-                        color += hadamard(attenuation, mat.emit);
-
-                        if (hit_mat != 0) {
-                            f32 cos_attenuation = dot(-ray_d, next_ray_n);
-                            cos_attenuation = MAX(cos_attenuation, 0.0f);
-
-                            attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
-
-                            ray_o = ray_o + ray_d * hit_d;
-
-                            f32 x = rand_f32_bi(&random_series);
-                            f32 y = rand_f32_bi(&random_series);
-                            f32 z = rand_f32_bi(&random_series);
-                            Vector3 rvec = Vector3{ x, y, z };
-
-                            Vector3 pure_bounce = ray_d - 2.0f * dot(ray_d, next_ray_n) * next_ray_n;
-                            Vector3 random_bounce = normalise_zero(next_ray_n + rvec);
-
-                            ray_d = normalise_zero(lerp(random_bounce, pure_bounce, mat.specularity));
-                        } else {
-                            break;
-                        }
-                    }
-
-                    final_color += color * inv_rays_per_pixel;
-                }
-
-                Vector3 srgb = Vector3{
-                    sRGB_from_linear(final_color.x),
-                    sRGB_from_linear(final_color.y),
-                    sRGB_from_linear(final_color.z)
-                };
-
-                pixels[(i*width + j)] = BGRA8_pack(srgb);
-            }
-        }
+    for (i32 i = 0; i < tiles_count; i++) {
+        ray_cast(tiles[i], image, camera, world, settings, random_series);
     }
 
     auto bmfh = BitmapFileHeader{
@@ -440,14 +503,14 @@ int main(int argc, char** argv)
 
     auto bmh = BitmapHeader{
         sizeof(BitmapHeader),
-        width,
-        height,
+        image.width,
+        image.height,
         1,
         32,
         0,
         0,
-        width,
-        height,
+        image.width,
+        image.height,
         0,
         0,
     };
@@ -455,7 +518,7 @@ int main(int argc, char** argv)
     FILE *f = fopen("test.bmp", "wb");
     fwrite(&bmfh, sizeof bmfh, 1, f);
     fwrite(&bmh, sizeof bmh, 1, f);
-    fwrite(pixels, pixels_size, 1, f);
+    fwrite(image.pixels, pixels_size, 1, f);
     fflush(f);
 
     return 0;
