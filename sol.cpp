@@ -227,6 +227,11 @@ f32 rand_f32_bi(RandomSeries *r)
     return -1.0f + 2.0f * rand_f32_uni(r);
 }
 
+struct Tile {
+    i32 start_x, end_x;
+    i32 start_y, end_y;
+};
+
 int main(int argc, char** argv)
 {
     (void)argc;
@@ -294,114 +299,134 @@ int main(int argc, char** argv)
     RandomSeries random_series = { 23528812 };
 
 
+    constexpr i32 tiles_count_x = 3;
+    constexpr i32 tiles_count_y = 3;
+    constexpr i32 tiles_count = tiles_count_x*tiles_count_y;
 
-    for (i32 i = 0; i < height; i++) {
-        f32 film_y = -1.0f + 2.0f*((f32)i / (f32)height);
+    Tile tiles[tiles_count] = {};
+    for (i32 i = 0; i < tiles_count_y; i++) {
+        for (i32 j = 0; j < tiles_count_x; j++) {
+            i32 index = i*tiles_count_x + j;
 
-        for (i32 j = 0; j < width; j++) {
-            f32 film_x = -1.0f + 2.0f*((f32)j / (f32)width);
+            tiles[index].start_x = j * (width / tiles_count_x);
+            tiles[index].start_y = i * (height / tiles_count_y);
 
-            f32 off_x = film_x + half_pixel_w;
-            f32 off_y = film_y + half_pixel_h;
+            tiles[index].end_x = j < tiles_count_x-1 ? tiles[index].start_x + width / tiles_count_x : width;
+            tiles[index].end_y = i < tiles_count_y-1 ? tiles[index].start_y + height / tiles_count_y : height;
+        }
+    }
 
-            Vector3 film_p = film_c +
-                off_x*film_half_w*camera_x +
-                off_y*film_half_h*camera_y;
+    for (i32 t = 0; t < tiles_count; t++) {
+        Tile tile = tiles[t];
 
-            Vector3 final_color = {};
+        for (i32 i = tile.start_y; i < tile.end_y; i++) {
+            f32 film_y = -1.0f + 2.0f*((f32)i / (f32)height);
 
-            for (i32 k = 0; k < rays_per_pixel; k++) {
-                Vector3 ray_o = camera_p;
-                Vector3 ray_d = normalise_zero(film_p - camera_p);
+            for (i32 j = tile.start_x; j < tile.end_x; j++) {
+                f32 film_x = -1.0f + 2.0f*((f32)j / (f32)width);
 
-                Vector3 color = {};
-                Vector3 attenuation = { 1.0f, 1.0f, 1.0f };
+                f32 off_x = film_x + half_pixel_w;
+                f32 off_y = film_y + half_pixel_h;
 
-                Vector3 next_ray_n;
-                for (i32 l = 0; l < max_ray_bounce; l++) {
-                    i32 hit_mat = 0;
-                    f32 hit_d   = F32_MAX;
+                Vector3 film_p = film_c +
+                    off_x*film_half_w*camera_x +
+                    off_y*film_half_h*camera_y;
 
-                    for (i32 p = 0; p < planes_count; p++) {
-                        Plane plane = planes[p];
+                Vector3 final_color = {};
 
-                        f32 denom = dot(plane.n, ray_d);
-                        if (denom > tolerance || denom < -tolerance) {
-                            f32 t = (-plane.d - dot(plane.n, ray_o)) / denom;
-                            if (t > min_hit_distance && t < hit_d) {
-                                hit_d   = t;
-                                hit_mat = plane.material;
-                                next_ray_n = plane.n;
+                for (i32 k = 0; k < rays_per_pixel; k++) {
+                    Vector3 ray_o = camera_p;
+                    Vector3 ray_d = normalise_zero(film_p - camera_p);
+
+                    Vector3 color = {};
+                    Vector3 attenuation = { 1.0f, 1.0f, 1.0f };
+
+                    Vector3 next_ray_n;
+                    for (i32 l = 0; l < max_ray_bounce; l++) {
+                        i32 hit_mat = 0;
+                        f32 hit_d   = F32_MAX;
+
+                        for (i32 p = 0; p < planes_count; p++) {
+                            Plane plane = planes[p];
+
+                            f32 denom = dot(plane.n, ray_d);
+                            if (denom > tolerance || denom < -tolerance) {
+                                f32 t = (-plane.d - dot(plane.n, ray_o)) / denom;
+                                if (t > min_hit_distance && t < hit_d) {
+                                    hit_d   = t;
+                                    hit_mat = plane.material;
+                                    next_ray_n = plane.n;
+                                }
                             }
+                        }
+
+                        for (i32 s = 0; s < spheres_count; s++) {
+                            Sphere sphere = spheres[s];
+
+                            Vector3 l = ray_o - sphere.p;
+                            f32 a = dot(ray_d, ray_d);
+                            f32 b = 2.0f * dot(ray_d, l);
+                            f32 c = dot(l, l) - sphere.r * sphere.r;
+
+                            f32 root_term = b*b - 4.0f*a*c;
+                            f32 denom = 2.0f * a;
+
+                            if (root_term >= 0.0f &&
+                                (denom > tolerance || denom < -tolerance))
+                            {
+                                f32 root = sqrtf(root_term);
+                                f32 tp = (-b + root) / denom;
+                                f32 tn = (-b - root) / denom;
+
+                                f32 t = tp;
+                                if (tn > min_hit_distance && tn < tp) {
+                                    t = tn;
+                                }
+
+                                if (t > min_hit_distance && t < hit_d) {
+                                    hit_d   = t;
+                                    hit_mat = sphere.material;
+                                    next_ray_n = normalise_zero(t*ray_d + l);
+                                }
+                            }
+                        }
+
+                        Material mat = materials[hit_mat];
+                        color += hadamard(attenuation, mat.emit);
+
+                        if (hit_mat != 0) {
+                            f32 cos_attenuation = dot(-ray_d, next_ray_n);
+                            cos_attenuation = MAX(cos_attenuation, 0.0f);
+
+                            attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
+
+                            ray_o = ray_o + ray_d * hit_d;
+
+                            f32 x = rand_f32_bi(&random_series);
+                            f32 y = rand_f32_bi(&random_series);
+                            f32 z = rand_f32_bi(&random_series);
+                            Vector3 rvec = Vector3{ x, y, z };
+
+                            Vector3 pure_bounce = ray_d - 2.0f * dot(ray_d, next_ray_n) * next_ray_n;
+                            Vector3 random_bounce = normalise_zero(next_ray_n + rvec);
+
+                            ray_d = normalise_zero(lerp(random_bounce, pure_bounce, mat.specularity));
+                        } else {
+                            break;
                         }
                     }
 
-                    for (i32 s = 0; s < spheres_count; s++) {
-                        Sphere sphere = spheres[s];
-
-                        Vector3 l = ray_o - sphere.p;
-                        f32 a = dot(ray_d, ray_d);
-                        f32 b = 2.0f * dot(ray_d, l);
-                        f32 c = dot(l, l) - sphere.r * sphere.r;
-
-                        f32 root_term = b*b - 4.0f*a*c;
-                        f32 denom = 2.0f * a;
-
-                        if (root_term >= 0.0f &&
-                            (denom > tolerance || denom < -tolerance))
-                        {
-                            f32 root = sqrtf(root_term);
-                            f32 tp = (-b + root) / denom;
-                            f32 tn = (-b - root) / denom;
-
-                            f32 t = tp;
-                            if (tn > min_hit_distance && tn < tp) {
-                                t = tn;
-                            }
-
-                            if (t > min_hit_distance && t < hit_d) {
-                                hit_d   = t;
-                                hit_mat = sphere.material;
-                                next_ray_n = normalise_zero(t*ray_d + l);
-                            }
-                        }
-                    }
-
-                    Material mat = materials[hit_mat];
-                    color += hadamard(attenuation, mat.emit);
-
-                    if (hit_mat != 0) {
-                        f32 cos_attenuation = dot(-ray_d, next_ray_n);
-                        cos_attenuation = MAX(cos_attenuation, 0.0f);
-
-                        attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
-
-                        ray_o = ray_o + ray_d * hit_d;
-
-                        f32 x = rand_f32_bi(&random_series);
-                        f32 y = rand_f32_bi(&random_series);
-                        f32 z = rand_f32_bi(&random_series);
-                        Vector3 rvec = Vector3{ x, y, z };
-
-                        Vector3 pure_bounce = ray_d - 2.0f * dot(ray_d, next_ray_n) * next_ray_n;
-                        Vector3 random_bounce = normalise_zero(next_ray_n + rvec);
-
-                        ray_d = normalise_zero(lerp(random_bounce, pure_bounce, mat.specularity));
-                    } else {
-                        break;
-                    }
+                    final_color += color * inv_rays_per_pixel;
                 }
 
-                final_color += color * inv_rays_per_pixel;
+                Vector3 srgb = Vector3{
+                    sRGB_from_linear(final_color.x),
+                    sRGB_from_linear(final_color.y),
+                    sRGB_from_linear(final_color.z)
+                };
+
+                pixels[(i*width + j)] = BGRA8_pack(srgb);
             }
-
-            Vector3 srgb = Vector3{
-                sRGB_from_linear(final_color.x),
-                sRGB_from_linear(final_color.y),
-                sRGB_from_linear(final_color.z)
-            };
-
-            pixels[(i*width + j)] = BGRA8_pack(srgb);
         }
     }
 
