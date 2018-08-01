@@ -7,8 +7,8 @@ BUILD="${ROOT}/build"
 mkdir -p ${BUILD}
 
 pushd ${BUILD}
-rustc -g -C opt-level=2 ${ROOT}/sol.rs
-#clang++ -Wall -Wextra -g -O0 -o sol ${ROOT}/sol.cpp
+#rustc -g -C opt-level=2 ${ROOT}/sol.rs
+clang++ -Wall -Wextra -g -O3 -o sol ${ROOT}/sol.cpp
 ./sol
 xdg-open ./test.bmp
 popd

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 using u8 = unsigned char;
@@ -10,6 +11,9 @@ using i32 = signed int;
 using f32 = float;
 
 #define F32_MAX 3.402823466e+38F
+#define U32_MAX 0xFFFFFFFF
+
+#define MAX(a, b) (a) > (b) ? (a) : (b)
 
 #ifdef _WIN32
 #define PACKED(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))
@@ -46,6 +50,10 @@ struct BGRA8 {
     u8 a;
 };
 
+struct RandomSeries {
+    u32 state;
+};
+
 struct Vector3 {
     f32 x;
     f32 y;
@@ -60,11 +68,19 @@ struct Vector2 {
 struct Plane {
     Vector3 n;
     f32 d;
+    i32 material;
 };
 
 struct Sphere {
     Vector3 p;
     f32 r;
+    i32 material;
+};
+
+struct Material {
+    Vector3 emit;
+    Vector3 reflect;
+    f32 specularity;
 };
 
 Vector3 operator*(Vector3 self, f32 rhs)
@@ -92,6 +108,27 @@ Vector3 operator+(Vector3 self, Vector3 rhs)
     return Vector3{ self.x + rhs.x, self.y + rhs.y, self.z + rhs.z };
 }
 
+Vector3& operator+=(Vector3 &lhs, f32 rhs)
+{
+    lhs.x += rhs;
+    lhs.y += rhs;
+    lhs.z += rhs;
+    return lhs;
+}
+
+Vector3 operator-(Vector3 v)
+{
+    return { -v.x, -v.y, -v.z };
+}
+
+Vector3& operator+=(Vector3 &lhs, Vector3 rhs)
+{
+    lhs.x += rhs.x;
+    lhs.y += rhs.y;
+    lhs.z += rhs.z;
+    return lhs;
+}
+
 Vector3 operator/(Vector3 self, f32 rhs)
 {
     return Vector3{ self.x / rhs, self.y / rhs, self.z / rhs };
@@ -100,6 +137,27 @@ Vector3 operator/(Vector3 self, f32 rhs)
 f32 dot(Vector3 lhs, Vector3 rhs)
 {
     return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+f32 lerp(f32 a, f32 b, f32 t)
+{
+    return (1.0f-t) * a + t*b;
+}
+
+Vector3 lerp(Vector3 a, Vector3 b, f32 t)
+{
+    Vector3 r;
+
+    r.x = lerp(a.x, b.x, t);
+    r.y = lerp(a.y, b.y, t);
+    r.z = lerp(a.z, b.z, t);
+
+    return r;
+}
+
+Vector3 hadamard(Vector3 lhs, Vector3 rhs)
+{
+    return Vector3{ lhs.x * rhs.x, lhs.y * rhs.y, lhs.z * rhs.z };
 }
 
 Vector3 cross(Vector3 lhs, Vector3 rhs)
@@ -113,7 +171,7 @@ Vector3 cross(Vector3 lhs, Vector3 rhs)
 
 f32 length(Vector3 v)
 {
-    return (f32)sqrt(dot(v, v));
+    return sqrtf(dot(v, v));
 }
 
 f32 length_sq(Vector3 v)
@@ -138,6 +196,44 @@ Vector3 normalise_zero(Vector3 v)
     return r;
 }
 
+f32 sRGB_from_linear(f32 l)
+{
+    if (l > 1.0f) {
+        return 1.0f;
+    } else if (l < 0.0f) {
+        return 0.0f;
+    }
+
+    f32 s = l*12.92f;
+    if (l > 0.0031308f) {
+        s = 1.055f*powf(l, 1.0f/2.4f) - 0.055f;
+    }
+
+    return s;
+}
+
+u32 BGRA8_pack(Vector3 v)
+{
+    Vector3 c = 255.0f * v;
+    return (u32)c.z | (u32)c.y << 8 | (u32)c.x << 16 | 255 << 24;
+}
+
+f32 rand_f32_uni(RandomSeries *r)
+{
+    u32 s = r->state;
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    r->state = s;
+
+    return (f32)(s >> 1) / (f32)(U32_MAX >> 1);
+}
+
+f32 rand_f32_bi(RandomSeries *r)
+{
+    return -1.0f + 2.0f * rand_f32_uni(r);
+}
+
 int main(int argc, char** argv)
 {
     (void)argc;
@@ -146,23 +242,33 @@ int main(int argc, char** argv)
     i32 width = 1280;
     i32 height = 720;
 
-    i32 pixels_size = width*height*sizeof(BGRA8);
-    BGRA8 *pixels = (BGRA8*)malloc(pixels_size);
+    i32 pixels_size = width*height*sizeof(u32);
+    u32 *pixels = (u32*)malloc(pixels_size);
+    memset(pixels, 0x000000FF, pixels_size);
 
-    for (i32 i = 0; i < height*width; i++) {
-        auto pixel = BGRA8{ 0, 0, 0, 255 };
-        pixels[i] = pixel;
-    }
-
-    Plane plane = Plane{
-        Vector3{ 0.0, 1.0, 0.0 },
-        0.0
+    Material materials[] = {
+        //        emit                         reflect                      specularity
+        Material{ Vector3{ 0.4f, 0.4f, 0.9f }, Vector3{ 0.0f, 0.0f, 0.0f }, 0.0f },
+        Material{ Vector3{ 0.0f, 0.0f, 0.0f }, Vector3{ 0.3f, 0.9f, 0.3f }, 0.0f },
+        Material{ Vector3{ 0.0f, 0.0f, 0.0f }, Vector3{ 0.2f, 0.2f, 0.2f }, 0.0f },
+        Material{ Vector3{ 0.0f, 0.0f, 0.0f }, Vector3{ 0.8f, 0.95f, 0.8f }, 0.8f },
+        Material{ Vector3{ 5.0f, 1.0f, 1.0f }, Vector3{ 0.0f, 0.0f, 0.0f }, 0.0f },
     };
 
-    Sphere sphere = Sphere{
-        Vector3{ 0.0, 0.0f, 0.0f },
-        1.0f
+    Plane planes[] = {
+        //     position                     normal   material
+        Plane{ Vector3{ 0.0f, 1.0f, 0.0f }, 0.0f,    1 },
     };
+
+    Sphere spheres[] = {
+        //      position                     radius   material
+        Sphere{ Vector3{ 0.0f, 0.0f, 0.0f }, 1.0f,    2 },
+        Sphere{ Vector3{ 3.0f, 0.0f, 2.0f }, 1.0f,    3 },
+        Sphere{ Vector3{ 2.5f, 2.0f, -5.0f }, 1.0f,   4 },
+    };
+
+    i32 planes_count  = sizeof planes / sizeof planes[0];
+    i32 spheres_count = sizeof spheres / sizeof spheres[0];
 
     Vector3 camera_p = Vector3{ 0.0f, 2.0f, 10.0f };
     Vector3 camera_z = normalise_zero(camera_p);
@@ -186,6 +292,14 @@ int main(int argc, char** argv)
     f32 half_pixel_w = 0.5f / width;
     f32 half_pixel_h = 0.5f / height;
 
+    f32 tolerance = 0.0001f;
+    f32 min_hit_distance = 0.001f;
+
+    i32 max_ray_bounce = 4;
+    i32 rays_per_pixel = 16;
+    f32 inv_rays_per_pixel = 1.0f / rays_per_pixel;
+    RandomSeries random_series = { 23528812 };
+
     for (i32 i = 0; i < height; i++) {
         f32 film_y = -1.0f + 2.0f*((f32)i / (f32)height);
 
@@ -199,61 +313,100 @@ int main(int argc, char** argv)
                 off_x*film_half_w*camera_x +
                 off_y*film_half_h*camera_y;
 
-            Vector3 ray_o = camera_p;
-            Vector3 ray_d = normalise_zero(film_p - camera_p);
+            Vector3 final_color = {};
 
-            i32 mat   = 0;
-            f32 hit_d = F32_MAX;
+            for (i32 k = 0; k < rays_per_pixel; k++) {
+                Vector3 ray_o = camera_p;
+                Vector3 ray_d = normalise_zero(film_p - camera_p);
 
-            f32 tolerance = 0.0001f;
-            f32 min_hit_distance = 0.001f;
+                Vector3 color = {};
+                Vector3 attenuation = { 1.0f, 1.0f, 1.0f };
 
-            // planes
-            {
-                f32 denom = dot(plane.n, ray_d);
-                if ((denom < -tolerance) || (denom > tolerance)) {
-                    f32 t = (-plane.d - dot(plane.n, ray_o)) / denom;
-                    if (t > min_hit_distance && t < hit_d) {
-                        hit_d = t;
-                        mat   = 1;
+                Vector3 next_ray_n;
+                for (i32 l = 0; l < max_ray_bounce; l++) {
+                    i32 hit_mat = 0;
+                    f32 hit_d   = F32_MAX;
+
+                    for (i32 p = 0; p < planes_count; p++) {
+                        Plane plane = planes[p];
+
+                        f32 denom = dot(plane.n, ray_d);
+                        if (denom > tolerance || denom < -tolerance) {
+                            f32 t = (-plane.d - dot(plane.n, ray_o)) / denom;
+                            if (t > min_hit_distance && t < hit_d) {
+                                hit_d   = t;
+                                hit_mat = plane.material;
+                                next_ray_n = plane.n;
+                            }
+                        }
+                    }
+
+                    for (i32 s = 0; s < spheres_count; s++) {
+                        Sphere sphere = spheres[s];
+
+                        Vector3 l = ray_o - sphere.p;
+                        f32 a = dot(ray_d, ray_d);
+                        f32 b = 2.0f * dot(ray_d, l);
+                        f32 c = dot(l, l) - sphere.r * sphere.r;
+
+                        f32 root_term = b*b - 4.0f*a*c;
+                        f32 denom = 2.0f * a;
+
+                        if (root_term >= 0.0f &&
+                            (denom > tolerance || denom < -tolerance))
+                        {
+                            f32 root = sqrtf(root_term);
+                            f32 tp = (-b + root) / denom;
+                            f32 tn = (-b - root) / denom;
+
+                            f32 t = tp;
+                            if (tn > min_hit_distance && tn < tp) {
+                                t = tn;
+                            }
+
+                            if (t > min_hit_distance && t < hit_d) {
+                                hit_d   = t;
+                                hit_mat = sphere.material;
+                                next_ray_n = normalise_zero(t*ray_d + l);
+                            }
+                        }
+                    }
+
+                    Material mat = materials[hit_mat];
+                    color += hadamard(attenuation, mat.emit);
+
+                    if (hit_mat != 0) {
+                        f32 cos_attenuation = dot(-ray_d, next_ray_n);
+                        cos_attenuation = MAX(cos_attenuation, 0.0f);
+
+                        attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
+
+                        ray_o = ray_o + ray_d * hit_d;
+
+                        f32 x = rand_f32_bi(&random_series);
+                        f32 y = rand_f32_bi(&random_series);
+                        f32 z = rand_f32_bi(&random_series);
+                        Vector3 rvec = Vector3{ x, y, z };
+
+                        Vector3 pure_bounce = ray_d - 2.0f * dot(ray_d, next_ray_n) * next_ray_n;
+                        Vector3 random_bounce = normalise_zero(next_ray_n + rvec);
+
+                        ray_d = normalise_zero(lerp(random_bounce, pure_bounce, mat.specularity));
+                    } else {
+                        break;
                     }
                 }
+
+                final_color += color * inv_rays_per_pixel;
             }
 
-            // spheres
-            {
-                Vector3 l = ray_o - sphere.p;
-                f32 a = dot(ray_d, ray_d);
-                f32 b = 2.0f * dot(ray_d, l);
-                f32 c = dot(l, l) - sphere.r * sphere.r;
+            Vector3 srgb = Vector3{
+                sRGB_from_linear(final_color.x),
+                sRGB_from_linear(final_color.y),
+                sRGB_from_linear(final_color.z)
+            };
 
-                f32 root_term = (f32)sqrt(b*b - 4.0f*a*c);
-                f32 denom = 2.0f * a;
-
-                if (root_term > 0.0) {
-                    f32 tp = (-b + root_term) / denom;
-                    f32 tn = (-b - root_term) / denom;
-
-                    f32 t = tp;
-                    if (tn > 0.0f && tn < tp) {
-                        t = tn;
-                    }
-
-                    if (t > 0.0f && t < hit_d) {
-                        hit_d = t;
-                        mat   = 2;
-                    }
-                }
-            }
-
-            // TODO(jesper): move into material array
-            if (mat == 2) {
-                pixels[(i*width + j)] = BGRA8{ 255, 0, 0, 255 };
-            } else if (mat == 1) {
-                pixels[(i*width + j)] = BGRA8{ 0, 0, 255, 255 };
-            } else {
-                pixels[(i*width + j)] = BGRA8{ 50, 50, 50, 255 };
-            }
+            pixels[(i*width + j)] = BGRA8_pack(srgb);
         }
     }
 
