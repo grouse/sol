@@ -43,13 +43,6 @@ PACKED(struct BitmapHeader {
     u32 colors_important;
 });
 
-struct BGRA8 {
-    u8 b;
-    u8 g;
-    u8 r;
-    u8 a;
-};
-
 struct RandomSeries {
     u32 state;
 };
@@ -299,6 +292,8 @@ int main(int argc, char** argv)
     i32 rays_per_pixel = 16;
     f32 inv_rays_per_pixel = 1.0f / rays_per_pixel;
     RandomSeries random_series = { 23528812 };
+
+
 
     for (i32 i = 0; i < height; i++) {
         f32 film_y = -1.0f + 2.0f*((f32)i / (f32)height);
