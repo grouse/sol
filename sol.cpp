@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <pthread.h>
 
 using u8 = unsigned char;
 using u16 = unsigned short;
@@ -15,11 +14,14 @@ using f32 = float;
 #define U32_MAX 0xFFFFFFFF
 
 #define MAX(a, b) (a) > (b) ? (a) : (b)
+#if defined(__linux__)
+#include "linux_sol.cpp"
+#else
+#error "unsupported platform"
+#endif
 
 #ifdef _WIN32
 #define PACKED(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))
-#else
-#define PACKED(decl) decl __attribute__((__packed__))
 #endif
 
 PACKED(struct BitmapFileHeader {
@@ -415,12 +417,12 @@ void* worker_thread_proc(void *data)
     Settings settings = thread_data->settings;
 
     RandomSeries random_series = { 23528812 };
-    i32 tile_index = __sync_fetch_and_sub(&thread_data->jobs_count, 1);
+    i32 tile_index = interlocked_fetch_and_sub(&thread_data->jobs_count, 1);
 
     while (tile_index > 0) {
         i32 i = tile_index-1;
         ray_cast(tiles[i], image, camera, world, settings, random_series);
-        tile_index = __sync_fetch_and_sub(&thread_data->jobs_count, 1);
+        tile_index = interlocked_fetch_and_sub(&thread_data->jobs_count, 1);
     }
 
     return nullptr;
@@ -442,10 +444,10 @@ int main(int argc, char** argv)
     settings.rays_per_pixel = 128;
     settings.inv_rays_per_pixel = 1.0f / settings.rays_per_pixel;
 
-    constexpr i32 num_threads   = 8;
-    constexpr i32 tiles_count_x = width / 128;
-    constexpr i32 tiles_count_y = height / 128;
-    constexpr i32 tiles_count   = tiles_count_x*tiles_count_y;
+    i32 num_threads   = 8;
+    i32 tiles_count_x = image.width / 128;
+    i32 tiles_count_y = image.height / 128;
+    i32 tiles_count   = tiles_count_x*tiles_count_y;
 
     i32 pixels_size = image.width*image.height*sizeof(u32);
     image.pixels = (u32*)malloc(pixels_size);
@@ -504,7 +506,7 @@ int main(int argc, char** argv)
     camera.half_pixel_w = 0.5f / image.width;
     camera.half_pixel_h = 0.5f / image.height;
 
-    Tile tiles[tiles_count] = {};
+    Tile *tiles = (Tile*)malloc(tiles_count * sizeof *tiles);
     for (i32 i = 0; i < tiles_count_y; i++) {
         for (i32 j = 0; j < tiles_count_x; j++) {
             i32 index = i*tiles_count_x + j;
@@ -532,17 +534,13 @@ int main(int argc, char** argv)
     if (num_threads == 0) {
         worker_thread_proc(&thread_data);
     } else {
-        pthread_t threads[num_threads];
-
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
+        void *threads[num_threads];
         for (i32 i = 0; i < num_threads; i++) {
-            pthread_create(&threads[i], &attr, &worker_thread_proc, &thread_data);
+            threads[i] = create_thread(&worker_thread_proc, &thread_data);
         }
 
         for (i32 i = 0; i < num_threads; i++) {
-            void* result;
-            pthread_join(threads[i], &result);
+            wait_for_thread(threads[i]);
         }
     }
 
