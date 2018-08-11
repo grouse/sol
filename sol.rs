@@ -5,6 +5,10 @@ use std::slice;
 use std::ops::{Sub, Div, Add, Mul, AddAssign, Neg};
 use std::f32;
 use std::u32;
+use std::cmp::max;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
 
 #[repr(C, packed)]
 struct BitmapFileHeader {
@@ -261,6 +265,13 @@ fn sRGB_from_linear(l : f32) -> f32
     return s;
 }
 
+struct Tile {
+    start_x : i32,
+    start_y : i32,
+    end_x : i32,
+    end_y : i32,
+}
+
 fn main()
 {
     assert_eq!(40, size_of::<BitmapHeader>());
@@ -273,12 +284,6 @@ fn main()
     //let height : i32 = 1080;
     let width : i32 = 1280;
     let height : i32 = 720;
-
-    let mut pixels : Vec<u32> = Vec::new();
-    pixels.reserve((width * height) as usize);
-    for _i in 0..height*width {
-        pixels.push(0x000000FF);
-    }
 
     let camera_p = Vector3{ x: 0.0, y: 1.83, z: 10.0 };
     let camera_z = normalise_zero(camera_p);
@@ -359,123 +364,187 @@ fn main()
     let min_distance = 0.001;
 
     let max_ray_bounce = 8;
-    let rays_per_pixel = 64;
+    let rays_per_pixel = 1;
     let inv_rays_per_pixel = 1.0 / rays_per_pixel as f32;
-    let mut random_series = RandomSeries{ state: 23528812 };
 
-    println!("casting...");
-    for i in 0..height {
-        let film_y = -1.0 + 2.0 * (i as f32 / height as f32);
+    let num_tiles = 200;
 
-        for j in 0..width {
-            let film_x = -1.0 + 2.0 * (j as f32 / width as f32);
+    let mut tiles : Vec<Tile> = Vec::new();
+    if false {
+        for i in 0..num_tiles {
+            for j in 0..num_tiles {
+                let start_x = j * ( width / num_tiles );
+                let start_y = i * ( height / num_tiles );
+                let end_x = max(start_x + ( width / num_tiles ), width);
+                let end_y = max(start_y + ( height / num_tiles ), height);
 
-            let mut final_color = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
-
-            for _k in 0..rays_per_pixel {
-                let offset_x = (film_x + half_pixel_w);
-                let offset_y = (film_y + half_pixel_h);
-
-                let film_p = film_c +
-                    offset_x*film_half_w*camera_x +
-                    offset_y*film_half_h*camera_y;
-
-                let mut ray_o = camera_p;
-                let mut ray_d = normalise_zero(film_p - camera_p);
-
-                let mut color       = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
-                let mut attenuation = Vector3{ x: 1.0, y: 1.0, z: 1.0 };
-
-                for _l in 0..max_ray_bounce {
-                    let mut hit_mat = 0;
-                    let mut hit_d   = f32::MAX;
-
-                    let mut next_ray_n = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
-
-                    for plane in &planes {
-                        let denom = dot(plane.n, ray_d);
-                        if denom > tolerance || denom < -tolerance {
-                            let t = (-plane.d - dot(plane.n, ray_o)) / denom;
-                            if t > min_distance && t < hit_d {
-                                hit_d   = t;
-                                hit_mat = plane.material;
-
-                                next_ray_n = plane.n;
-                            }
-                        }
-                    }
-
-                    for sphere in &spheres {
-                        let l : Vector3 = ray_o - sphere.p;
-                        let a = dot(ray_d, ray_d);
-                        let b = 2.0 * dot(ray_d, l);
-                        let c = dot(l, l) - sphere.r * sphere.r;
-
-                        let root_term = b*b - 4.0*a*c;
-                        let denom = 2.0 * a;
-
-                        if root_term >= 0.0 && (denom > tolerance || denom < -tolerance) {
-                            let tp = (-b + sqrt(root_term)) / denom;
-                            let tn = (-b - sqrt(root_term)) / denom;
-
-                            let mut t = tp;
-                            if tn > min_distance && tn < tp {
-                                t = tn;
-                            }
-
-                            if t > min_distance && t < hit_d {
-                                hit_d   = t;
-                                hit_mat = sphere.material;
-
-                                next_ray_n = normalise_zero(t*ray_d + l);
-                            }
-                        }
-                    }
-
-                    let mat = materials[hit_mat as usize];
-                    color += hadamard(attenuation, mat.emit);
-
-                    if hit_mat != 0 {
-                        let mut cos_attenuation = dot(-ray_d, next_ray_n);
-                        if cos_attenuation < 0.0 {
-                            cos_attenuation = 0.0;
-                        }
-                        attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
-
-                        ray_o = ray_o + ray_d * hit_d;
-
-                        let x = rand_f32_bi(&mut random_series);
-                        let y = rand_f32_bi(&mut random_series);
-                        let z = rand_f32_bi(&mut random_series);
-                        let rvec = Vector3{ x, y, z };
-
-                        let pure_bounce = ray_d - 2.0 * dot(ray_d, next_ray_n) * next_ray_n;
-                        let random_bounce = normalise_zero(next_ray_n + rvec);
-
-                        ray_d = normalise_zero(
-                            random_bounce.lerp(
-                                pure_bounce,
-                                mat.specularity));
-                    } else {
-                        break;
-                    }
-                }
-
-                final_color += color * inv_rays_per_pixel;
+                let tile = Tile{ start_x, start_y, end_x, end_y };
+                tiles.push(tile);
             }
-
-            let srgb = Vector3{
-                x: sRGB_from_linear(final_color.x),
-                y: sRGB_from_linear(final_color.y),
-                z: sRGB_from_linear(final_color.z)
-            };
-
-            pixels[(i*width + j) as usize] = BGRA8_pack(srgb);
         }
+    } else {
+        for i in 0..num_tiles {
+            let start_x = 0;
+            let start_y = i * ( height / num_tiles );
+            let end_x = width;
+            let end_y = max(start_y + ( height / num_tiles ), height);
 
-        if i % 128 == 0 {
-            println!("casting... {}%", (i as f32 / height as f32) * 100.0 );
+            let tile = Tile{ start_x, start_y, end_x, end_y };
+            tiles.push(tile);
         }
+    }
+
+    let num_cores = 12;
+    let mut worker_threads : Vec<thread::JoinHandle<_>> = Vec::new();
+    let work_queue = Arc::new(Mutex::new(tiles));
+
+    let mut pixels : Vec<u32> = Vec::new();
+    pixels.reserve((width * height) as usize);
+    for _i in 0..height*width {
+        pixels.push(0x000000FF);
+    }
+
+    for i in 0..num_cores {
+        let tl_index  = i;
+        let tl_queue  = work_queue.clone();
+
+        let handle = thread::spawn(move || {
+            let mut random_series = RandomSeries{ state: 23528812 };
+            loop {
+                let mut d = tl_queue.lock().unwrap();
+
+                if d.len() != 0 {
+                    let tile = d.pop().unwrap();
+                    let mut tl_pixels = pixels.chunks_mut((tile.start_y * width) as usize);
+                    let mut iter = tl_pixels.iter();
+
+                    println!("thread {:?} has work", thread::current().id());
+
+
+                    for i in 0..(tile.end_y - tile.start_y) {
+                        let film_y = -1.0 + 2.0 * (i as f32 / height as f32);
+
+                        for j in 0..width {
+                            let film_x = -1.0 + 2.0 * (j as f32 / width as f32);
+
+                            let mut final_color = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+
+                            for _k in 0..rays_per_pixel {
+                                let offset_x = (film_x + half_pixel_w);
+                                let offset_y = (film_y + half_pixel_h);
+
+                                let film_p = film_c +
+                                    offset_x*film_half_w*camera_x +
+                                    offset_y*film_half_h*camera_y;
+
+                                let mut ray_o = camera_p;
+                                let mut ray_d = normalise_zero(film_p - camera_p);
+
+                                let mut color       = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+                                let mut attenuation = Vector3{ x: 1.0, y: 1.0, z: 1.0 };
+
+                                for _l in 0..max_ray_bounce {
+                                    let mut hit_mat = 0;
+                                    let mut hit_d   = f32::MAX;
+
+                                    let mut next_ray_n = Vector3{ x: 0.0, y: 0.0, z: 0.0 };
+
+                                    for plane in &planes {
+                                        let denom = dot(plane.n, ray_d);
+                                        if denom > tolerance || denom < -tolerance {
+                                            let t = (-plane.d - dot(plane.n, ray_o)) / denom;
+                                            if t > min_distance && t < hit_d {
+                                                hit_d   = t;
+                                                hit_mat = plane.material;
+
+                                                next_ray_n = plane.n;
+                                            }
+                                        }
+                                    }
+
+                                    for sphere in &spheres {
+                                        let l : Vector3 = ray_o - sphere.p;
+                                        let a = dot(ray_d, ray_d);
+                                        let b = 2.0 * dot(ray_d, l);
+                                        let c = dot(l, l) - sphere.r * sphere.r;
+
+                                        let root_term = b*b - 4.0*a*c;
+                                        let denom = 2.0 * a;
+
+                                        if root_term >= 0.0 && (denom > tolerance || denom < -tolerance) {
+                                            let tp = (-b + sqrt(root_term)) / denom;
+                                            let tn = (-b - sqrt(root_term)) / denom;
+
+                                            let mut t = tp;
+                                            if tn > min_distance && tn < tp {
+                                                t = tn;
+                                            }
+
+                                            if t > min_distance && t < hit_d {
+                                                hit_d   = t;
+                                                hit_mat = sphere.material;
+
+                                                next_ray_n = normalise_zero(t*ray_d + l);
+                                            }
+                                        }
+                                    }
+
+                                    let mat = materials[hit_mat as usize];
+                                    color += hadamard(attenuation, mat.emit);
+
+                                    if hit_mat != 0 {
+                                        let mut cos_attenuation = dot(-ray_d, next_ray_n);
+                                        if cos_attenuation < 0.0 {
+                                            cos_attenuation = 0.0;
+                                        }
+                                        attenuation = hadamard(attenuation, cos_attenuation*mat.reflect);
+
+                                        ray_o = ray_o + ray_d * hit_d;
+
+                                        let x = rand_f32_bi(&mut random_series);
+                                        let y = rand_f32_bi(&mut random_series);
+                                        let z = rand_f32_bi(&mut random_series);
+                                        let rvec = Vector3{ x, y, z };
+
+                                        let pure_bounce = ray_d - 2.0 * dot(ray_d, next_ray_n) * next_ray_n;
+                                        let random_bounce = normalise_zero(next_ray_n + rvec);
+
+                                        ray_d = normalise_zero(
+                                            random_bounce.lerp(
+                                                pure_bounce,
+                                                mat.specularity));
+                                    } else {
+                                        break;
+                                    }
+                                }
+
+                                final_color += color * inv_rays_per_pixel;
+                            }
+
+                            let srgb = Vector3{
+                                x: sRGB_from_linear(final_color.x),
+                                y: sRGB_from_linear(final_color.y),
+                                z: sRGB_from_linear(final_color.z)
+                            };
+
+                            iter = BGRA8_pack(srgb);
+                            iter = iter.next();
+                        }
+                    }
+
+                    println!("thread {:?} finished work", thread::current().id());
+                } else {
+                    println!("no work to be done for {}", tl_index);
+
+                }
+            }
+        });
+
+        worker_threads.push(handle);
+    }
+
+    for handle in worker_threads {
+        handle.join();
     }
 
     println!(" done!");

@@ -11,6 +11,7 @@
 #define PACKED(decl) decl __attribute__((__packed__))
 
 #define interlocked_fetch_and_sub(var, val) __sync_fetch_and_sub(var, val)
+#define interlocked_fetch_and_add(var, val) __sync_fetch_and_add(var, val)
 
 void* create_thread(void* (*func)(void*), void *data)
 {

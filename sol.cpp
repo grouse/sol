@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <assert.h>
 
 using u8 = unsigned char;
 using u16 = unsigned short;
@@ -16,12 +17,10 @@ using f32 = float;
 #define MAX(a, b) (a) > (b) ? (a) : (b)
 #if defined(__linux__)
 #include "linux_sol.cpp"
+#elif defined(_WIN32)
+#include "win32_sol.cpp"
 #else
 #error "unsupported platform"
-#endif
-
-#ifdef _WIN32
-#define PACKED(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))
 #endif
 
 PACKED(struct BitmapFileHeader {
@@ -304,7 +303,7 @@ void ray_cast(
                 Vector3 color = {};
                 Vector3 attenuation = { 1.0f, 1.0f, 1.0f };
 
-                Vector3 next_ray_n;
+                Vector3 next_ray_n = {};
                 for (i32 l = 0; l < settings.max_ray_bounce; l++) {
                     i32 hit_mat = 0;
                     f32 hit_d   = F32_MAX;
@@ -328,10 +327,10 @@ void ray_cast(
                     for (i32 s = 0; s < world.spheres_count; s++) {
                         Sphere sphere = world.spheres[s];
 
-                        Vector3 l = ray_o - sphere.p;
+                        Vector3 o = ray_o - sphere.p;
                         f32 a = dot(ray_d, ray_d);
-                        f32 b = 2.0f * dot(ray_d, l);
-                        f32 c = dot(l, l) - sphere.r * sphere.r;
+                        f32 b = 2.0f * dot(ray_d, o);
+                        f32 c = dot(o, o) - sphere.r * sphere.r;
 
                         f32 root_term = b*b - 4.0f*a*c;
                         f32 denom = 2.0f * a;
@@ -352,7 +351,7 @@ void ray_cast(
                             if (t > settings.min_hit_distance && t < hit_d) {
                                 hit_d   = t;
                                 hit_mat = sphere.material;
-                                next_ray_n = normalise_zero(t*ray_d + l);
+                                next_ray_n = normalise_zero(t*ray_d + o);
                             }
                         }
                     }
@@ -403,7 +402,8 @@ struct ThreadData {
     Image image;
     Settings settings;
 
-    volatile i32 jobs_count;
+    u32 jobs_count;
+    volatile u32 job_index;
 };
 
 void* worker_thread_proc(void *data)
@@ -415,14 +415,14 @@ void* worker_thread_proc(void *data)
     Camera camera     = thread_data->camera;
     Image image       = thread_data->image;
     Settings settings = thread_data->settings;
+    u32 jobs_count    = thread_data->jobs_count;
 
     RandomSeries random_series = { 23528812 };
-    i32 tile_index = interlocked_fetch_and_sub(&thread_data->jobs_count, 1);
 
-    while (tile_index > 0) {
-        i32 i = tile_index-1;
-        ray_cast(tiles[i], image, camera, world, settings, random_series);
-        tile_index = interlocked_fetch_and_sub(&thread_data->jobs_count, 1);
+    u32 tile_index = interlocked_fetch_and_add(&thread_data->job_index, 1);
+    while (tile_index < jobs_count) {
+        ray_cast(tiles[tile_index], image, camera, world, settings, random_series);
+        tile_index = interlocked_fetch_and_add(&thread_data->job_index, 1);
     }
 
     return nullptr;
@@ -444,7 +444,7 @@ int main(int argc, char** argv)
     settings.rays_per_pixel = 128;
     settings.inv_rays_per_pixel = 1.0f / settings.rays_per_pixel;
 
-    i32 num_threads   = 8;
+    constexpr i32 num_threads   = 8;
     i32 tiles_count_x = image.width / 128;
     i32 tiles_count_y = image.height / 128;
     i32 tiles_count   = tiles_count_x*tiles_count_y;
@@ -531,6 +531,8 @@ int main(int argc, char** argv)
     thread_data.camera   = camera;
 
     thread_data.jobs_count = tiles_count;
+    thread_data.job_index  = 0;
+
     if (num_threads == 0) {
         worker_thread_proc(&thread_data);
     } else {
